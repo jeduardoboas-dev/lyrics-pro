@@ -178,16 +178,75 @@ const videoExtensions = ["mp4", "webm", "mov", "m4v"];
 const audioExtensions = ["mp3", "wav", "ogg", "m4a", "aac", "flac"];
 const textExtensions = ["txt", "md", "csv", "json", "xml"];
 
-function OutputCanvas({ output, stage = false }) {
+function OutputCanvas({
+  output,
+  stage = false,
+  role = stage ? "stage" : "operator",
+  onMediaDuration,
+  onMediaEnded,
+  onMediaTime,
+}) {
   const theme = output?.theme || defaultLayouts[0];
   const slide = output?.item?.slides?.[output.slideIndex] || null;
   const isEmpty = !output?.item && !output?.timerVisible && !output?.blackout;
+  const mediaRef = useRef(null);
+  const mediaSource = slide?.url || (slide?.path ? `file://${slide.path}` : "");
+  const mediaPlaying = Boolean(output?.mediaPlayback?.playing);
+  const mediaVolume = Math.max(0, Math.min(1, Number(output?.mediaPlayback?.volume) || 0));
+  const mediaMuted = Boolean(output?.mediaPlayback?.muted) || role !== "audience";
+  const mediaSeekTime = Math.max(0, Number(output?.mediaPlayback?.seekTime) || 0);
+  const mediaSeekNonce = output?.mediaPlayback?.seekNonce || 0;
+  const mediaSession = output?.mediaPlayback?.session || 0;
   const [clock, setClock] = useState(() => new Date());
+
   useEffect(() => {
     if (!stage) return undefined;
     const interval = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(interval);
   }, [stage]);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media) return;
+    media.volume = mediaVolume;
+    media.muted = mediaMuted;
+  }, [mediaMuted, mediaSession, mediaVolume]);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media) return;
+    if (mediaPlaying && !output?.timerVisible) {
+      media.play().catch(() => {});
+    } else {
+      media.pause();
+    }
+  }, [mediaPlaying, mediaSession, mediaSource, output?.timerVisible]);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media || !Number.isFinite(mediaSeekTime)) return;
+    try {
+      media.currentTime = mediaSeekTime;
+    } catch {
+      // Alguns formatos só aceitam seek depois que os metadados são carregados.
+    }
+  }, [mediaSeekNonce, mediaSeekTime, mediaSession, mediaSource]);
+
+  function handleMediaMetadata(event) {
+    const media = event.currentTarget;
+    media.volume = mediaVolume;
+    media.muted = mediaMuted;
+    if (mediaSeekTime) media.currentTime = Math.min(mediaSeekTime, media.duration || mediaSeekTime);
+    onMediaDuration?.(Number.isFinite(media.duration) ? media.duration : 0);
+    if (mediaPlaying && !output?.timerVisible) media.play().catch(() => {});
+  }
+
+  const mediaEvents = {
+    onEnded: () => onMediaEnded?.(),
+    onLoadedMetadata: handleMediaMetadata,
+    onTimeUpdate: (event) => onMediaTime?.(event.currentTarget.currentTime),
+  };
+
   return (
     <div
       className={`output-canvas ${stage ? "stage-view" : ""} ${isEmpty ? "empty-view" : ""}`}
@@ -206,7 +265,7 @@ function OutputCanvas({ output, stage = false }) {
         </header>
       )}
       <div key={output?.transitionNonce || 0} className={`output-center transition-${output?.transition?.type || "cut"}`} style={{ "--transition-duration": `${output?.transition?.duration || 0}ms` }}>
-        {output?.blackout ? null : output?.timerVisible ? (
+        {output?.timerVisible ? (
           <div className={`timer-output ${output.timerSeconds <= 0 ? "finished" : output.timerSeconds <= 10 ? "ending" : ""}`}>
             <span>COMEÇAMOS EM</span>
             <strong>{formatTime(output.timerSeconds)}</strong>
@@ -214,8 +273,15 @@ function OutputCanvas({ output, stage = false }) {
         ) : slide ? (
           <>
             {output.item.kind === "image" && <img src={slide.url || `file://${slide.path}`} alt="" />}
-            {output.item.kind === "video" && <video src={slide.url || `file://${slide.path}`} autoPlay playsInline />}
-            {output.item.kind === "audio" && <audio src={slide.url || `file://${slide.path}`} autoPlay controls />}
+            {output.item.kind === "video" && <video ref={mediaRef} src={mediaSource} muted={mediaMuted} playsInline {...mediaEvents} />}
+            {output.item.kind === "audio" && (
+              <div className="audio-output">
+                <Volume2 size={46} />
+                <strong>{output.item.title}</strong>
+                <span>{mediaPlaying ? "Áudio em reprodução" : "Áudio pausado"}</span>
+                <audio ref={mediaRef} src={mediaSource} muted={mediaMuted} {...mediaEvents} />
+              </div>
+            )}
             {!["image", "video", "audio"].includes(output.item.kind) && (
               <div className="projected-text">
                 {output.item.kind === "bible" && <span>{slide.label}</span>}
@@ -234,6 +300,7 @@ function OutputCanvas({ output, stage = false }) {
           <strong>{output?.nextText || "—"}</strong>
         </footer>
       )}
+      {output?.blackout && <div className="blackout-overlay" aria-label="Tela preta" />}
     </div>
   );
 }
@@ -251,7 +318,7 @@ function OutputWindow() {
     window.addEventListener("keydown", handleEmergencyKey);
     return () => window.removeEventListener("keydown", handleEmergencyKey);
   }, []);
-  return <OutputCanvas output={output} stage={mode === "stage"} />;
+  return <OutputCanvas output={output} stage={mode === "stage"} role={mode} />;
 }
 
 function formatTime(seconds) {
@@ -677,6 +744,13 @@ function App() {
   const [louvorJaSearching, setLouvorJaSearching] = useState(false);
   const [louvorJaPlaying, setLouvorJaPlaying] = useState("");
   const [displays, setDisplays] = useState([]);
+  const [mediaPlaying, setMediaPlaying] = useState(false);
+  const [mediaTime, setMediaTime] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
+  const [mediaVolume, setMediaVolume] = useState(1);
+  const [mediaMuted, setMediaMuted] = useState(false);
+  const [mediaSeek, setMediaSeek] = useState({ time: 0, nonce: 0 });
+  const [mediaSession, setMediaSession] = useState(0);
   const [toast, setToast] = useState("");
   const [, setSaveStatus] = useState("Salvo");
   const obsClientRef = useRef(null);
@@ -855,6 +929,7 @@ function App() {
   const configuredStageDisplay = displays.find((display) => display.id === state.settings.stageDisplayId);
   const audienceRoleDisplay = configuredAudienceDisplay || externalDisplays[0] || operatorDisplay;
   const stageRoleDisplay = configuredStageDisplay || externalDisplays[1] || operatorDisplay;
+  const liveMediaKind = ["video", "audio"].includes(liveItem?.kind) ? liveItem.kind : "";
   const playlistItems = (activePlaylist?.entries || [])
     .map((entry) => ({ entry, item: state.library.find((item) => item.id === entry.itemId) }))
     .filter((row) => row.item);
@@ -867,6 +942,15 @@ function App() {
       (!query || item.title.toLowerCase().includes(query) || item.slides.some((slide) => slide.text?.toLowerCase().includes(query)));
   }), [filter, search, state.library]);
   const nextText = liveItem?.slides?.[live.slideIndex + 1]?.text || "";
+
+  useEffect(() => {
+    setMediaPlaying(Boolean(liveMediaKind));
+    setMediaTime(0);
+    setMediaDuration(0);
+    setMediaSeek((current) => ({ time: 0, nonce: current.nonce + 1 }));
+    setMediaSession((current) => current + 1);
+  }, [live?.itemId, live?.slideIndex, liveMediaKind]);
+
   const output = {
     item: liveItem,
     slideIndex: live?.slideIndex || 0,
@@ -878,6 +962,14 @@ function App() {
     nextText,
     transition: state.transition,
     transitionNonce,
+    mediaPlayback: {
+      playing: Boolean(liveMediaKind) && mediaPlaying,
+      volume: mediaVolume,
+      muted: mediaMuted,
+      seekTime: mediaSeek.time,
+      seekNonce: mediaSeek.nonce,
+      session: mediaSession,
+    },
     safeBackground: state.settings.safeBackgroundImage
       ? `url("${state.settings.safeBackgroundImage}") center / cover no-repeat`
       : state.settings.safeBackground,
@@ -885,7 +977,7 @@ function App() {
 
   useEffect(() => {
     if (ready) desktop?.sendOutput(output);
-  }, [ready, live, liveTheme, blackout, timerSeconds, timerVisible, alert, state.transition, state.settings.safeBackground, state.settings.safeBackgroundImage, transitionNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ready, live, liveTheme, blackout, timerSeconds, timerVisible, alert, state.transition, state.settings.safeBackground, state.settings.safeBackgroundImage, transitionNonce, mediaPlaying, mediaVolume, mediaMuted, mediaSeek, mediaSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function mutate(updater) {
     setState((current) => updater(current));
@@ -1013,6 +1105,11 @@ function App() {
 
   async function takeSceneLive(scene = activeScene) {
     if (!scene) return;
+    const sceneItem = state.library.find((item) => item.id === scene.itemId);
+    if (["image", "video", "audio"].includes(sceneItem?.kind)) {
+      const launchResult = await openOutput("audience", undefined, false);
+      if (launchResult?.ok === false) return;
+    }
     previewScene(scene.id);
     setLive(scene.itemId ? { itemId: scene.itemId, slideIndex: scene.slideIndex || 0 } : null);
     setLiveLayoutId(scene.layoutId || state.activeLayoutId);
@@ -1173,14 +1270,43 @@ function App() {
     if (unsupportedCount) setToast(`${unsupportedCount} arquivo(s) ignorado(s): formato ainda não suportado`);
   }
 
-  function takeLive() {
+  function seekMedia(value) {
+    const requested = Math.max(0, Number(value) || 0);
+    const nextTime = mediaDuration ? Math.min(mediaDuration, requested) : requested;
+    setMediaTime(nextTime);
+    setMediaSeek((current) => ({ time: nextTime, nonce: current.nonce + 1 }));
+  }
+
+  function skipMedia(seconds) {
+    seekMedia(mediaTime + seconds);
+  }
+
+  function restartMedia() {
+    seekMedia(0);
+    setMediaPlaying(true);
+  }
+
+  function changeMediaVolume(value) {
+    const nextVolume = Math.max(0, Math.min(1, Number(value) || 0));
+    setMediaVolume(nextVolume);
+    if (nextVolume > 0) setMediaMuted(false);
+  }
+
+  async function takeLive(slideIndex = selectedSlide) {
     if (!selectedItem) return;
-    setLive({ itemId: selectedItem.id, slideIndex: selectedSlide });
+    const launchesMedia = ["image", "video", "audio"].includes(selectedItem.kind);
+    if (launchesMedia) {
+      const launchResult = await openOutput("audience", undefined, false);
+      if (launchResult?.ok === false) return;
+    }
+    setLive({ itemId: selectedItem.id, slideIndex });
     setLiveLayoutId(state.activeLayoutId);
     setTransitionNonce((current) => current + 1);
     setBlackout(false);
     setTimerVisible(false);
-    setToast("Conteúdo enviado para projeção");
+    setToast(launchesMedia
+      ? `${selectedItem.kind === "audio" ? "Áudio" : selectedItem.kind === "video" ? "Vídeo" : "Imagem"} enviado para ${audienceRoleDisplay?.label || "a janela do Operador"}`
+      : "Conteúdo enviado para projeção");
   }
 
   function nextLive(direction) {
@@ -1192,24 +1318,45 @@ function App() {
     setSelectedSlide(next);
   }
 
-  async function openOutput(mode) {
-    const displayId = mode === "audience" ? state.settings.audienceDisplayId : state.settings.stageDisplayId;
+  async function openOutput(mode, displayIdOverride, announce = true) {
+    const configuredDisplayId = mode === "audience" ? state.settings.audienceDisplayId : state.settings.stageDisplayId;
+    const displayId = displayIdOverride === undefined ? configuredDisplayId : displayIdOverride;
     const result = await desktop?.openOutput(mode, displayId);
     if (result?.ok === false) {
       const occupiedBy = result.conflictingMode === "audience" ? "Projeção" : "Retorno";
       setToast(`${result.displayLabel} já está sendo usada por ${occupiedBy}`);
-      return;
+      return result;
     }
     desktop?.sendOutput(output);
     const label = mode === "audience" ? "Projeção" : "Retorno";
-    setToast(result?.operatorPreview
-      ? `${label} aberto em janela de teste no Operador`
-      : `${label} aberto em tela cheia · ${result?.displayLabel || "tela configurada"}`);
+    if (announce) {
+      setToast(result?.operatorPreview
+        ? `${label} aberto em janela de teste no Operador`
+        : `${label} aberto em tela cheia · ${result?.displayLabel || "tela configurada"}`);
+    }
+    return result;
+  }
+
+  async function refreshDisplays() {
+    const screens = await desktop?.listDisplays?.();
+    if (screens?.length) setDisplays(screens);
+    return screens || [];
+  }
+
+  function selectMediaDisplay(value) {
+    const displayId = Number(value) || null;
+    mutate((current) => ({
+      ...current,
+      settings: { ...current.settings, audienceDisplayId: displayId },
+    }));
+    const selectedDisplay = displays.find((display) => display.id === displayId);
+    setToast(selectedDisplay
+      ? `${selectedDisplay.label} selecionada como destino da mídia`
+      : "Destino automático selecionado");
   }
 
   async function openSettings() {
-    const screens = await desktop?.listDisplays?.();
-    if (screens?.length) setDisplays(screens);
+    await refreshDisplays();
     setSettingsOpen(true);
   }
 
@@ -1293,23 +1440,51 @@ function App() {
 
         <section className="operator">
           <div className="monitors">
-            <article><header><span className="preview-dot" /> PRÉVIA <small>{selectedItem?.title || "Sem seleção"}</small></header><OutputCanvas output={{ ...output, item: selectedItem, slideIndex: selectedSlide, theme, blackout: false, timerVisible: false, alert: "" }} /></article>
-            <article><header><span className="live-dot" /> NO AR <small>{liveItem?.title || "Sem conteúdo"}</small></header><OutputCanvas output={output} /></article>
+            <article><header><span className="preview-dot" /> PRÉVIA <small>{selectedItem?.title || "Sem seleção"}</small></header><OutputCanvas role="preview" output={{ ...output, item: selectedItem, slideIndex: selectedSlide, theme, blackout: false, timerVisible: false, alert: "", mediaPlayback: { ...output.mediaPlayback, playing: false } }} /></article>
+            <article><header><span className="live-dot" /> NO AR <small>{liveItem?.title || "Sem conteúdo"}</small></header><OutputCanvas role="operator" output={output} onMediaDuration={setMediaDuration} onMediaTime={setMediaTime} onMediaEnded={() => { setMediaPlaying(false); setMediaTime(mediaDuration); }} /></article>
           </div>
-          <div className="transport">
-            <button onClick={() => nextLive(-1)}><SkipBack /></button>
-            <button onClick={() => setSelectedSlide((n) => Math.max(0, n - 1))}><ChevronLeft /></button>
-            <button className="take" onClick={takeLive}><Play fill="currentColor" /> EXIBIR AGORA <kbd>ENTER</kbd></button>
-            <button onClick={() => setSelectedSlide((n) => Math.min((selectedItem?.slides.length || 1) - 1, n + 1))}><ChevronRight /></button>
-            <button onClick={() => nextLive(1)}><SkipForward /></button>
-            <button className={blackout ? "danger active" : "danger"} onClick={() => { setBlackout((v) => !v); setTimerVisible(false); }}><Square /> Tela preta</button>
-            <button className="danger" onClick={clearLiveOutput}><X /> Limpar</button>
+          <div className="live-control-deck">
+            <div className="launch-bar">
+              <label>
+                <MonitorUp size={15} />
+                <span>DESTINO DA MÍDIA</span>
+                <select value={configuredAudienceDisplay?.id || ""} onChange={(event) => selectMediaDisplay(event.target.value)}>
+                  <option value="">Automático · {externalDisplays[0]?.label || "janela no Operador"}</option>
+                  {displays.map((display) => <option value={display.id} key={display.id}>{display.label}{display.operator ? " · Operador" : display.primary ? " · Principal" : ""} · {display.bounds.width}×{display.bounds.height}</option>)}
+                </select>
+              </label>
+              <small>{audienceRoleDisplay?.operator ? "Abre como janela de teste" : `Tela cheia em ${audienceRoleDisplay?.label || "saída automática"}`}</small>
+              <button title="Atualizar telas detectadas" onClick={refreshDisplays}><RotateCcw size={14} /></button>
+            </div>
+            <div className="transport">
+              <button onClick={() => nextLive(-1)}><SkipBack /></button>
+              <button onClick={() => setSelectedSlide((n) => Math.max(0, n - 1))}><ChevronLeft /></button>
+              <button className="take" onClick={() => takeLive()}><Play fill="currentColor" /> EXIBIR AGORA <kbd>ENTER</kbd></button>
+              <button onClick={() => setSelectedSlide((n) => Math.min((selectedItem?.slides.length || 1) - 1, n + 1))}><ChevronRight /></button>
+              <button onClick={() => nextLive(1)}><SkipForward /></button>
+              <button className={blackout ? "danger active" : "danger"} onClick={() => { setBlackout((v) => !v); setTimerVisible(false); }}><Square /> Tela preta</button>
+              <button className="danger" onClick={clearLiveOutput}><X /> Limpar</button>
+            </div>
+            {liveMediaKind && (
+              <div className="media-controls">
+                <strong className="media-title">{liveMediaKind === "video" ? <Video size={15} /> : <Music2 size={15} />}{liveItem?.title}</strong>
+                <button title={mediaPlaying ? "Pausar" : "Reproduzir"} onClick={() => setMediaPlaying((current) => !current)}>{mediaPlaying ? <Pause size={16} /> : <Play size={16} fill="currentColor" />}</button>
+                <button title="Reiniciar mídia" onClick={restartMedia}><RotateCcw size={15} /></button>
+                <button title="Voltar 10 segundos" onClick={() => skipMedia(-10)}><SkipBack size={15} /><span>-10</span></button>
+                <span className="media-time">{formatTime(Math.floor(mediaTime))}</span>
+                <input className="media-progress" aria-label="Posição da mídia" type="range" min="0" max={Math.max(0.01, mediaDuration)} step="0.1" value={Math.min(mediaTime, mediaDuration || 0)} disabled={!mediaDuration} onChange={(event) => seekMedia(event.target.value)} />
+                <span className="media-time">{formatTime(Math.floor(mediaDuration))}</span>
+                <button title="Avançar 10 segundos" onClick={() => skipMedia(10)}><span>+10</span><SkipForward size={15} /></button>
+                <button className={mediaMuted ? "active" : ""} title={mediaMuted ? "Ativar som" : "Silenciar"} onClick={() => setMediaMuted((current) => !current)}>{mediaMuted ? <MicOff size={16} /> : <Volume2 size={16} />}</button>
+                <input className="media-volume" aria-label="Volume da mídia" type="range" min="0" max="1" step="0.01" value={mediaVolume} onChange={(event) => changeMediaVolume(event.target.value)} />
+              </div>
+            )}
           </div>
           <div className="slides-area">
             <header><div><small>SLIDES</small><h3>{selectedItem?.title || "Selecione um conteúdo"}</h3></div><span>{selectedItem ? selectedSlide + 1 : 0} / {selectedItem?.slides.length || 0}</span></header>
             <div className="slides">
               {selectedItem?.slides.map((slide, index) => (
-                <button className={selectedSlide === index ? "selected" : ""} key={slide.id} onClick={() => setSelectedSlide(index)} onDoubleClick={() => { setSelectedSlide(index); setLive({ itemId: selectedItem.id, slideIndex: index }); }}>
+                <button className={selectedSlide === index ? "selected" : ""} key={slide.id} onClick={() => setSelectedSlide(index)} onDoubleClick={() => { setSelectedSlide(index); takeLive(index); }}>
                   <small>{String(index + 1).padStart(2, "0")}</small>
                   <div style={{ background: theme.background, color: theme.color }}>{slide.path ? <span>{selectedItem.kind === "audio" ? "ÁUDIO" : selectedItem.kind === "video" ? "VÍDEO" : "IMAGEM"}</span> : <p>{slide.text}</p>}</div>
                   <span>{slide.label}</span>

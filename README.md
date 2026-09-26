@@ -14,6 +14,9 @@ Primeira base funcional do aplicativo de projeção para Windows.
 - Bloqueio de abertura duplicada do aplicativo.
 - Testes automatizados de persistência executados antes da Release.
 - Executável acompanhado de checksum SHA-256 para conferência.
+- Destino da mídia selecionável diretamente na área de operação.
+- Abertura automática da projeção ao exibir imagens, vídeos e áudios.
+- Controles sincronizados de play, pausa, reinício, posição, volume e mudo.
 
 ## Recursos incluídos
 

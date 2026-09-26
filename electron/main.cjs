@@ -7,6 +7,7 @@ const { loadState, saveState } = require("./state-store.cjs");
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173";
 const outputWindows = new Map();
+let latestOutput = null;
 let operatorWindow;
 
 function rendererUrl(hash = "") {
@@ -179,6 +180,7 @@ ipcMain.handle("output:open", (_event, { mode, displayId }) => {
     if (existing.wrDisplayId === target.id && existing.wrOperatorPreview === operatorPreview) {
       existing.show();
       existing.focus();
+      if (latestOutput) existing.webContents.send("output:update", latestOutput);
       return {
         ok: true,
         displayId: target.id,
@@ -204,6 +206,9 @@ ipcMain.handle("output:open", (_event, { mode, displayId }) => {
   win.wrOperatorPreview = operatorPreview;
   outputWindows.set(mode, win);
   win.loadURL(rendererUrl(`#output=${mode}`));
+  win.webContents.once("did-finish-load", () => {
+    if (latestOutput && !win.isDestroyed()) win.webContents.send("output:update", latestOutput);
+  });
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     if (outputWindows.get(mode) === win) outputWindows.delete(mode);
@@ -223,6 +228,7 @@ ipcMain.handle("output:close", (_event, mode) => {
 });
 
 ipcMain.on("output:update", (_event, payload) => {
+  latestOutput = payload;
   for (const win of outputWindows.values()) {
     if (!win.isDestroyed()) win.webContents.send("output:update", payload);
   }
