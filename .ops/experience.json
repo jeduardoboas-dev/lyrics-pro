@@ -1,0 +1,27 @@
+﻿{
+    "project":  "wr-lyrics-pro",
+    "brand_profile":  "standalone-brand",
+    "sales_surface":  true,
+    "multi_tenant":  false,
+    "visual_system":  {
+                          "typography":  "clean-executive",
+                          "spacing":  "consistent-grid",
+                          "accessibility":  "AA-target",
+                          "responsive":  "mobile-first"
+                      },
+    "communication":  {
+                          "principle":  "problem-to-solution",
+                          "tone":  "clear-pragmatic-confident",
+                          "avoid":  "technology-list-without-business-context"
+                      },
+    "surfaces":  {
+                     "application":  true,
+                     "marketing":  true,
+                     "documentation":  true
+                 },
+    "governance":  {
+                       "ops_managed":  true,
+                       "visual_qa_required":  true,
+                       "production_requires_confirmation":  true
+                   }
+}
